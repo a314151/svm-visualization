@@ -104,6 +104,12 @@ export default function SVMVisualizationPage() {
     };
   }, []);
 
+  // 检查result是否与当前points匹配
+  const isResultValid = useCallback(() => {
+    if (!result) return false;
+    return result.alphas.length === points.length;
+  }, [result, points.length]);
+
   const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -149,7 +155,8 @@ export default function SVMVisualizationPage() {
       ctx.fillText(val.toFixed(0), padding - 10, y + 4);
     }
 
-    if (showBoundary && result && result.alphas.length > 0 && points.length > 0) {
+    // 只有当result有效时才绘制决策边界
+    if (showBoundary && result && isResultValid() && result.alphas.length > 0 && points.length > 0) {
       const grid = computeDecisionBoundary(points, result.alphas, result.b, kernelType, gamma, 50);
       
       if (grid.length > 0) {
@@ -212,7 +219,8 @@ export default function SVMVisualizationPage() {
     points.forEach((point, index) => {
       const { cx, cy } = toCanvasCoord(point.x, point.y);
       
-      const isSupportVector = result?.supportVectors.includes(index);
+      // 只有当result有效时才检查支持向量
+      const isSupportVector = isResultValid() && result?.supportVectors.includes(index);
       
       ctx.beginPath();
       ctx.arc(cx, cy, isSupportVector ? 12 : 8, 0, Math.PI * 2);
@@ -264,7 +272,7 @@ export default function SVMVisualizationPage() {
     ctx.stroke();
     ctx.fillStyle = '#374151';
     ctx.fillText('支持向量', canvasSize - 88, 64);
-  }, [points, result, showBoundary, kernelType, gamma, toCanvasCoord]);
+  }, [points, result, showBoundary, kernelType, gamma, toCanvasCoord, isResultValid]);
 
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -285,6 +293,8 @@ export default function SVMVisualizationPage() {
         label: currentLabel,
       };
       setPoints(prev => [...prev, newPoint]);
+      // 添加新点后清除旧的结果，因为结果不再有效
+      setResult(null);
     }
   }, [currentLabel, toDataCoord]);
 
@@ -335,7 +345,7 @@ export default function SVMVisualizationPage() {
               <Badge variant="outline" className="text-sm">
                 {points.length} 个数据点
               </Badge>
-              {result && (
+              {result && isResultValid() && (
                 <Badge variant="secondary" className="text-sm">
                   准确率: {result.accuracy.toFixed(1)}%
                 </Badge>
@@ -430,7 +440,7 @@ export default function SVMVisualizationPage() {
                   </TabsList>
                   
                   <TabsContent value="canvas" className="mt-4">
-                    {result ? (
+                    {result && isResultValid() ? (
                       <div className="space-y-4">
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                           <div className="bg-blue-50 rounded-lg p-3">
@@ -470,7 +480,7 @@ export default function SVMVisualizationPage() {
                   </TabsContent>
                   
                   <TabsContent value="kernel" className="mt-4">
-                    {result && result.kernelMatrix.length > 0 ? (
+                    {result && isResultValid() && result.kernelMatrix.length > 0 ? (
                       <div className="overflow-x-auto">
                         <h4 className="font-medium mb-2">核矩阵 K (Kernel Matrix / Gram Matrix)</h4>
                         <p className="text-sm text-gray-600 mb-3">
@@ -514,7 +524,7 @@ export default function SVMVisualizationPage() {
                   </TabsContent>
                   
                   <TabsContent value="alpha" className="mt-4">
-                    {result && result.alphas.length > 0 ? (
+                    {result && isResultValid() && result.alphas.length > 0 ? (
                       <div className="space-y-4">
                         <h4 className="font-medium">拉格朗日乘子 α (Lagrange Multipliers)</h4>
                         <p className="text-sm text-gray-600">
@@ -536,6 +546,8 @@ export default function SVMVisualizationPage() {
                             <tbody>
                               {points.map((point, i) => {
                                 const isSV = result.supportVectors.includes(i);
+                                const alpha = result.alphas[i] ?? 0;
+                                const decisionVal = result.decisionValues[i] ?? 0;
                                 return (
                                   <tr key={i} className={isSV ? 'bg-blue-50' : ''}>
                                     <td className="border-b p-2">x{i + 1}</td>
@@ -548,13 +560,13 @@ export default function SVMVisualizationPage() {
                                       </Badge>
                                     </td>
                                     <td className="border-b p-2 font-mono">
-                                      {formatNumber(result.alphas[i])}
+                                      {formatNumber(alpha)}
                                     </td>
                                     <td className="border-b p-2 font-mono">
-                                      {formatNumber(result.alphas[i] * point.label)}
+                                      {formatNumber(alpha * point.label)}
                                     </td>
                                     <td className="border-b p-2 font-mono">
-                                      {formatNumber(result.decisionValues[i])}
+                                      {formatNumber(decisionVal)}
                                     </td>
                                     <td className="border-b p-2">
                                       {isSV ? (
@@ -574,7 +586,7 @@ export default function SVMVisualizationPage() {
                           <p className="text-sm">
                             <strong>约束验证:</strong> Σαᵢyᵢ = {
                               formatNumber(points.reduce((sum, p, i) => 
-                                sum + result.alphas[i] * p.label, 0
+                                sum + (result.alphas[i] ?? 0) * p.label, 0
                               ))
                             } (应接近 0)
                           </p>
