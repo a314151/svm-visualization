@@ -14,6 +14,7 @@ export interface DataPoint {
 export interface SVMResult {
   alphas: number[];
   b: number;
+  w?: [number, number]; // 线性核的权重向量
   supportVectors: number[];
   kernelMatrix: number[][];
   decisionValues: number[];
@@ -60,6 +61,13 @@ export function computeKernelMatrix(
   return K;
 }
 
+// SMO状态对象（解决值传递问题）
+interface SMOState {
+  alphas: number[];
+  b: number;
+  errors: number[];
+}
+
 // SMO算法求解SVM对偶问题
 export function trainSVM(
   points: DataPoint[],
@@ -99,19 +107,17 @@ export function trainSVM(
   }
   
   const K = computeKernelMatrix(points, kernelType, gamma);
-  const alphas = new Array(n).fill(0);
-  let b = 0;
   
-  const H: number[][] = Array(n).fill(null).map(() => Array(n).fill(0));
-  for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) {
-      H[i][j] = labels[i] * labels[j] * K[i][j];
-    }
-  }
+  // 初始化状态对象
+  const state: SMOState = {
+    alphas: new Array(n).fill(0),
+    b: 0,
+    errors: new Array(n).fill(0)
+  };
   
-  const errors = new Array(n).fill(0);
+  // 初始化误差
   for (let i = 0; i < n; i++) {
-    errors[i] = decisionFunction(i, alphas, labels, K, b) - labels[i];
+    state.errors[i] = -labels[i]; // 初始时所有alpha=0，所以f(x)=b=0
   }
   
   let iter = 0;
@@ -123,12 +129,12 @@ export function trainSVM(
     
     if (examineAll) {
       for (let i = 0; i < n; i++) {
-        numChanged += examineExample(i, n, alphas, labels, H, K, errors, b, C, tolerance);
+        numChanged += examineExample(i, n, state, labels, K, C, tolerance);
       }
     } else {
       for (let i = 0; i < n; i++) {
-        if (alphas[i] > 0 && alphas[i] < C) {
-          numChanged += examineExample(i, n, alphas, labels, H, K, errors, b, C, tolerance);
+        if (state.alphas[i] > 0 && state.alphas[i] < C) {
+          numChanged += examineExample(i, n, state, labels, K, C, tolerance);
         }
       }
     }
@@ -142,18 +148,21 @@ export function trainSVM(
     iter++;
   }
   
+  // 找出支持向量
   const supportVectors: number[] = [];
   for (let i = 0; i < n; i++) {
-    if (alphas[i] > tolerance) {
+    if (state.alphas[i] > tolerance) {
       supportVectors.push(i);
     }
   }
   
+  // 计算决策值
   const decisionValues: number[] = [];
   for (let i = 0; i < n; i++) {
-    decisionValues.push(decisionFunction(i, alphas, labels, K, b));
+    decisionValues.push(computeF(i, state.alphas, labels, K, state.b));
   }
   
+  // 计算准确率
   let correct = 0;
   for (let i = 0; i < n; i++) {
     const pred = decisionValues[i] >= 0 ? 1 : -1;
@@ -161,9 +170,21 @@ export function trainSVM(
   }
   const accuracy = (correct / n) * 100;
   
+  // 对于线性核，计算权重向量w
+  let w: [number, number] | undefined;
+  if (kernelType === 'linear') {
+    let w1 = 0, w2 = 0;
+    for (let i = 0; i < n; i++) {
+      w1 += state.alphas[i] * labels[i] * points[i].x;
+      w2 += state.alphas[i] * labels[i] * points[i].y;
+    }
+    w = [w1, w2];
+  }
+  
   return {
-    alphas,
-    b,
+    alphas: state.alphas,
+    b: state.b,
+    w,
     supportVectors,
     kernelMatrix: K,
     decisionValues,
@@ -172,7 +193,8 @@ export function trainSVM(
   };
 }
 
-function decisionFunction(
+// 计算决策函数值
+function computeF(
   i: number,
   alphas: number[],
   labels: number[],
@@ -186,33 +208,34 @@ function decisionFunction(
   return sum + b;
 }
 
+// 检查样本是否违反KKT条件
 function examineExample(
   i2: number,
   n: number,
-  alphas: number[],
+  state: SMOState,
   labels: number[],
-  H: number[][],
   K: number[][],
-  errors: number[],
-  b: number,
   C: number,
   tolerance: number
 ): number {
   const y2 = labels[i2];
-  const alpha2 = alphas[i2];
-  const E2 = errors[i2];
+  const alpha2 = state.alphas[i2];
+  const E2 = state.errors[i2];
   const r2 = E2 * y2;
   
+  // 检查KKT条件
   if (!((r2 < -tolerance && alpha2 < C) || (r2 > tolerance && alpha2 > 0))) {
     return 0;
   }
   
+  // 选择第二个变量
   let i1 = -1;
   let maxDiff = 0;
   
+  // 启发式选择：选择使|E1 - E2|最大的i1
   for (let i = 0; i < n; i++) {
-    if (alphas[i] > 0 && alphas[i] < C) {
-      const E1 = errors[i];
+    if (state.alphas[i] > 0 && state.alphas[i] < C) {
+      const E1 = state.errors[i];
       const diff = Math.abs(E1 - E2);
       if (diff > maxDiff) {
         maxDiff = diff;
@@ -221,115 +244,130 @@ function examineExample(
     }
   }
   
-  if (i1 >= 0) {
-    if (takeStep(i1, i2, n, alphas, labels, H, K, errors, b, C)) {
-      return 1;
-    }
+  if (i1 >= 0 && takeStep(i1, i2, n, state, labels, K, C)) {
+    return 1;
   }
   
+  // 如果启发式选择失败，遍历所有非边界样本
   const randStart = Math.floor(Math.random() * n);
   for (let i = 0; i < n; i++) {
     const idx = (randStart + i) % n;
-    if (alphas[idx] > 0 && alphas[idx] < C && idx !== i2) {
-      if (takeStep(idx, i2, n, alphas, labels, H, K, errors, b, C)) {
+    if (state.alphas[idx] > 0 && state.alphas[idx] < C && idx !== i2) {
+      if (takeStep(idx, i2, n, state, labels, K, C)) {
         return 1;
       }
     }
   }
   
+  // 如果还是失败，遍历所有样本
   for (let i = 0; i < n; i++) {
-    if (i !== i2) {
-      if (takeStep(i, i2, n, alphas, labels, H, K, errors, b, C)) {
-        return 1;
-      }
+    if (i !== i2 && takeStep(i, i2, n, state, labels, K, C)) {
+      return 1;
     }
   }
   
   return 0;
 }
 
+// 执行一步优化
 function takeStep(
   i1: number,
   i2: number,
   n: number,
-  alphas: number[],
+  state: SMOState,
   labels: number[],
-  H: number[][],
   K: number[][],
-  errors: number[],
-  b: number,
   C: number
 ): boolean {
   if (i1 === i2) return false;
   
-  const alpha1 = alphas[i1];
-  const alpha2 = alphas[i2];
+  const alpha1 = state.alphas[i1];
+  const alpha2 = state.alphas[i2];
   const y1 = labels[i1];
   const y2 = labels[i2];
-  const E1 = errors[i1];
-  const E2 = errors[i2];
+  const E1 = state.errors[i1];
+  const E2 = state.errors[i2];
   
-  let lower: number, upper: number;
+  // 计算边界
+  let L: number, H: number;
   
   if (y1 !== y2) {
-    lower = Math.max(0, alpha2 - alpha1);
-    upper = Math.min(C, C + alpha2 - alpha1);
+    L = Math.max(0, alpha2 - alpha1);
+    H = Math.min(C, C + alpha2 - alpha1);
   } else {
-    lower = Math.max(0, alpha2 + alpha1 - C);
-    upper = Math.min(C, alpha2 + alpha1);
+    L = Math.max(0, alpha2 + alpha1 - C);
+    H = Math.min(C, alpha2 + alpha1);
   }
   
-  if (lower >= upper) return false;
+  if (L >= H) return false;
   
-  const eta = H[i1][i1] + H[i2][i2] - 2 * H[i1][i2];
+  // 计算eta (二阶导数)
+  const k11 = K[i1][i1];
+  const k22 = K[i2][i2];
+  const k12 = K[i1][i2];
+  const eta = k11 + k22 - 2 * k12;
   
   let a2: number;
   
   if (eta > 0) {
     a2 = alpha2 + y2 * (E1 - E2) / eta;
-    if (a2 < lower) a2 = lower;
-    else if (a2 > upper) a2 = upper;
+    if (a2 < L) a2 = L;
+    else if (a2 > H) a2 = H;
   } else {
-    const f1 = y1 * E1 - alpha1 * H[i1][i1] - alpha2 * H[i1][i2];
-    const f2 = y2 * E2 - alpha1 * H[i1][i2] - alpha2 * H[i2][i2];
+    // 计算目标函数在边界点的值
+    const f1 = y1 * E1 + state.b - alpha1 * k11 - alpha2 * k12;
+    const f2 = y2 * E2 + state.b - alpha1 * k12 - alpha2 * k22;
     
-    const Lobj = lower * (f1 + f2) + 0.5 * lower * lower * H[i2][i2];
-    const Hobj = upper * (f1 + f2) + 0.5 * upper * upper * H[i2][i2];
+    const Lobj = L * (f2 + y2 * f1) + 0.5 * L * L * k22;
+    const Hobj = H * (f2 + y2 * f1) + 0.5 * H * H * k22;
     
     if (Lobj < Hobj - 1e-10) {
-      a2 = lower;
+      a2 = L;
     } else if (Lobj > Hobj + 1e-10) {
-      a2 = upper;
+      a2 = H;
     } else {
       a2 = alpha2;
     }
   }
   
-  if (Math.abs(a2 - alpha2) < 1e-10) return false;
+  // 检查变化是否足够大
+  if (Math.abs(a2 - alpha2) < 1e-10 * (alpha2 + a2 + 1e-10)) {
+    return false;
+  }
   
+  // 计算新的alpha1
   const a1 = alpha1 + y1 * y2 * (alpha2 - a2);
   
+  // 更新偏置b
   let bNew: number;
+  const b1 = E1 + y1 * (a1 - alpha1) * k11 + y2 * (a2 - alpha2) * k12 + state.b;
+  const b2 = E2 + y1 * (a1 - alpha1) * k12 + y2 * (a2 - alpha2) * k22 + state.b;
+  
   if (a1 > 0 && a1 < C) {
-    bNew = b + E1 + y1 * (a1 - alpha1) * H[i1][i1] + y2 * (a2 - alpha2) * H[i1][i2];
+    bNew = b1;
   } else if (a2 > 0 && a2 < C) {
-    bNew = b + E2 + y1 * (a1 - alpha1) * H[i1][i2] + y2 * (a2 - alpha2) * H[i2][i2];
+    bNew = b2;
   } else {
-    bNew = b + (E1 + E2 + y1 * (a1 - alpha1) * H[i1][i1] + y2 * (a2 - alpha2) * H[i2][i2] 
-              + y1 * (a1 - alpha1) * H[i1][i2] + y2 * (a2 - alpha2) * H[i2][i2]) / 2;
+    bNew = (b1 + b2) / 2;
   }
+  
+  // 更新误差缓存
+  const delta1 = y1 * (a1 - alpha1);
+  const delta2 = y2 * (a2 - alpha2);
   
   for (let i = 0; i < n; i++) {
-    errors[i] += y1 * (a1 - alpha1) * K[i1][i] + y2 * (a2 - alpha2) * K[i2][i] - (bNew - b);
+    state.errors[i] += delta1 * K[i1][i] + delta2 * K[i2][i] + (state.b - bNew);
   }
   
-  alphas[i1] = a1;
-  alphas[i2] = a2;
-  b = bNew;
+  // 更新状态
+  state.alphas[i1] = a1;
+  state.alphas[i2] = a2;
+  state.b = bNew;
   
   return true;
 }
 
+// 计算决策边界
 export function computeDecisionBoundary(
   points: DataPoint[],
   alphas: number[],
@@ -382,6 +420,7 @@ export function computeDecisionBoundary(
   return grid;
 }
 
+// 格式化数字
 export function formatNumber(num: number, decimals: number = 4): string {
   return num.toFixed(decimals);
 }
