@@ -4,11 +4,11 @@
 
 ## 🌐 在线访问
 
-| 平台 | 地址 |
-|------|------|
-| **GitHub** | https://github.com/a314151/svm-visualization |
-| **Vercel** | https://svm-visualization.vercel.app |
-| **Cloudflare Pages** | https://svm-visualization.pages.dev |
+| 平台 | 地址 | 状态 |
+|------|------|------|
+| **GitHub** | https://github.com/a314151/svm-visualization | ✅ |
+| **Vercel** | https://svm-visualization.vercel.app | ✅ |
+| **Cloudflare Pages** | https://svm-visualization.pages.dev | ✅ |
 
 ## ✨ 功能特性
 
@@ -46,11 +46,11 @@ npm run dev
 
 ### SMO算法
 
-本系统实现了完整的SMO（Sequential Minimal Optimization）算法：
+本系统实现了简化版SMO（Sequential Minimal Optimization）算法：
 
 1. **对偶问题求解** - 将原始优化问题转化为对偶问题
 2. **KKT条件检验** - 检查样本是否违反KKT条件
-3. **启发式变量选择** - 选择使|E1-E2|最大的变量对
+3. **变量选择** - 随机选择第二个变量进行优化
 4. **边界约束** - 确保alpha在[0, C]范围内
 
 ### 核函数
@@ -68,9 +68,12 @@ npm run dev
 
 ## 📝 更新日志
 
+### v1.0.2 (2026-03-16)
+- 修复SMO算法实现，提高分类准确率
+- 修复Vercel部署配置
+
 ### v1.0.1 (2026-03-16)
 - 修复SMO算法中b和errors更新的值传递问题
-- 使用状态对象解决JavaScript值传递bug
 
 ### v1.0.0 (2026-03-16)
 - 初始版本发布
